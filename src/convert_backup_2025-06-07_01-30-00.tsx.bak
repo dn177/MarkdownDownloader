@@ -1,0 +1,428 @@
+import {
+  Form,
+  ActionPanel,
+  Action,
+  showToast,
+  Toast,
+  getPreferenceValues,
+  showInFinder,
+  popToRoot,
+  open,
+} from "@raycast/api";
+import { useForm, FormValidation } from "@raycast/utils";
+import { useState, useEffect } from "react";
+import fetch from "node-fetch";
+import TurndownService from "turndown";
+import * as fs from "fs-extra";
+import * as path from "path";
+import * as crypto from "crypto";
+import { 
+  sanitizeFilename, 
+  generateFilenameFromTitle, 
+  ensureUniqueFilename,
+  extractDomain,
+  handleError 
+} from "./utils";
+import { Preferences } from "./preferences";
+
+interface FormValues {
+  url: string;
+  removeNonContent: boolean;
+  downloadImages: boolean;
+  outputPath: string;
+  filename: string;
+  autoGenerateFilename: boolean;
+  openAfterConversion: boolean;
+}
+
+export default function ConvertWebpage() {
+  const [isLoading, setIsLoading] = useState(false);
+  const [suggestedFilename, setSuggestedFilename] = useState("");
+  const preferences = getPreferenceValues<Preferences>();
+
+  const { handleSubmit, itemProps, values } = useForm<FormValues>({
+    onSubmit: async (values) => {
+      setIsLoading(true);
+      try {
+        await convertWebpageToMarkdown(values);
+      } catch (error) {
+        await handleError(error, "Webpage Conversion");
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    validation: {
+      url: FormValidation.Required,
+      outputPath: FormValidation.Required,
+      filename: (value) => {
+        if (!values.autoGenerateFilename && !value) {
+          return "Filename is required when auto-generate is disabled";
+        }
+      },
+    },
+    initialValues: {
+      outputPath: preferences.defaultOutputPath || path.join(process.env.HOME || "", "Downloads"),
+      removeNonContent: true,
+      downloadImages: true,
+      autoGenerateFilename: true,
+      openAfterConversion: false,
+    },
+  });
+
+  // Update suggested filename when URL changes
+  useEffect(() => {
+    if (values.url && values.autoGenerateFilename) {
+      try {
+        const url = new URL(values.url);
+        const domain = extractDomain(values.url);
+        const pathParts = url.pathname.split("/").filter(p => p);
+        const lastPart = pathParts[pathParts.length - 1] || domain;
+        const cleanName = sanitizeFilename(lastPart.replace(/\.\w+$/, ""));
+        setSuggestedFilename(`${cleanName}.md`);
+      } catch {
+        setSuggestedFilename("webpage.md");
+      }
+    }
+  }, [values.url, values.autoGenerateFilename]);
+
+  async function convertWebpageToMarkdown(values: FormValues) {
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Converting webpage...",
+    });
+
+    // Validate URL
+    let url: URL;
+    try {
+      url = new URL(values.url);
+    } catch {
+      throw new Error("Invalid URL provided");
+    }
+
+    // Fetch the webpage
+    toast.message = "Fetching webpage...";
+    const response = await fetch(values.url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch webpage: ${response.status} ${response.statusText}`);
+    }
+
+    const html = await response.text();
+    const baseUrl = new URL(values.url);
+
+    // Extract title from HTML
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    let title = titleMatch ? titleMatch[1].trim() : "Untitled";
+
+    // Clean HTML
+    toast.message = "Processing content...";
+    let cleanedHtml = html;
+    if (values.removeNonContent) {
+      // Simple content extraction - remove common non-content elements
+      cleanedHtml = cleanedHtml
+        // Remove scripts and styles
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+        .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, "")
+        // Remove common navigation and footer elements
+        .replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, "")
+        .replace(/<header\b[^<]*(?:(?!<\/header>)<[^<]*)*<\/header>/gi, "")
+        .replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, "")
+        .replace(/<aside\b[^<]*(?:(?!<\/aside>)<[^<]*)*<\/aside>/gi, "")
+        // Remove ads and tracking
+        .replace(/<div[^>]*class="[^"]*(?:ads?|advertisement|banner|sponsor)[^"]*"[^>]*>[\s\S]*?<\/div>/gi, "")
+        .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, "");
+
+      // Try to extract main content
+      const mainContentPatterns = [
+        /<main\b[^>]*>([\s\S]*?)<\/main>/i,
+        /<article\b[^>]*>([\s\S]*?)<\/article>/i,
+        /<div[^>]*(?:class|id)="[^"]*(?:content|main|body|post|entry)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+        /<div[^>]*role="main"[^>]*>([\s\S]*?)<\/div>/i,
+      ];
+
+      for (const pattern of mainContentPatterns) {
+        const match = cleanedHtml.match(pattern);
+        if (match && match[1]) {
+          cleanedHtml = match[1];
+          break;
+        }
+      }
+    }
+
+    // Create output directory
+    await fs.ensureDir(values.outputPath);
+
+    // Process images if needed
+    let imagesFolder: string | null = null;
+    if (values.downloadImages) {
+      toast.message = "Processing images...";
+      const imageData = await processImagesSimple(
+        cleanedHtml,
+        baseUrl,
+        values.outputPath,
+        sanitizeFilename(title)
+      );
+      if (imageData) {
+        cleanedHtml = imageData.html;
+        imagesFolder = imageData.folder;
+      }
+    }
+
+    // Convert to markdown
+    toast.message = "Converting to markdown...";
+    const turndownService = createTurndownService();
+    const content = turndownService.turndown(cleanedHtml);
+    // Generate filename
+    let filename: string;
+    if (values.autoGenerateFilename) {
+      filename = generateFilenameFromTitle(title);
+    } else {
+      filename = values.filename.endsWith(".md") 
+        ? values.filename 
+        : `${values.filename}.md`;
+    }
+    
+    let outputFile = path.join(values.outputPath, filename);
+    outputFile = await ensureUniqueFilename(outputFile);
+
+    // Add metadata header
+    const metadata = `---
+title: ${title}
+url: ${values.url}
+date: ${new Date().toISOString()}
+domain: ${extractDomain(values.url)}
+${imagesFolder ? `images_folder: ${path.basename(imagesFolder)}` : ""}
+---
+
+`;
+
+    // Clean up the content
+    const cleanContent = content
+      .replace(/\n{3,}/g, "\n\n") // Remove excessive newlines
+      .trim();
+
+    // Write the markdown file
+    await fs.writeFile(outputFile, metadata + cleanContent);
+
+    toast.style = Toast.Style.Success;
+    toast.title = "Conversion Complete";
+    toast.message = `Saved to ${path.basename(outputFile)}`;
+    toast.primaryAction = {
+      title: "Show in Finder",
+      onAction: () => {
+        showInFinder(outputFile);
+      },
+    };
+    toast.secondaryAction = {
+      title: "Open File",
+      onAction: () => {
+        open(outputFile);
+      },
+    };
+
+    if (values.openAfterConversion) {
+      await open(outputFile);
+    }
+
+    await popToRoot();
+  }
+
+  async function processImagesSimple(
+    html: string,
+    baseUrl: URL,
+    outputPath: string,
+    folderPrefix: string
+  ): Promise<{ html: string; folder: string } | null> {
+    const imgRegex = /<img[^>]+src="([^"]+)"[^>]*>/gi;
+    const images: { match: string; src: string }[] = [];
+    
+    let match;
+    while ((match = imgRegex.exec(html)) !== null) {
+      images.push({ match: match[0], src: match[1] });
+    }
+
+    if (images.length === 0) return null;
+    const timestamp = new Date().toISOString().split("T")[0];
+    const imageDir = path.join(outputPath, `${folderPrefix}-images-${timestamp}`);
+    await fs.ensureDir(imageDir);
+
+    let modifiedHtml = html;
+    let downloadedCount = 0;
+
+    for (const img of images) {
+      try {
+        const imageUrl = new URL(img.src, baseUrl);
+        
+        // Skip data URLs and invalid protocols
+        if (imageUrl.protocol === "data:" || 
+            (!imageUrl.protocol.startsWith("http") && 
+             !imageUrl.protocol.startsWith("https"))) {
+          continue;
+        }
+
+        // Download image
+        const response = await fetch(imageUrl.href, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+          },
+        });
+        
+        if (!response.ok) continue;
+
+        const buffer = await response.buffer();
+        
+        // Determine file extension
+        const contentType = response.headers.get("content-type");
+        let ext = path.extname(imageUrl.pathname) || "";
+        
+        if (!ext && contentType) {
+          const typeMap: Record<string, string> = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/svg+xml": ".svg",
+          };
+          ext = typeMap[contentType] || ".jpg";
+        } else if (!ext) {
+          ext = ".jpg";
+        }
+        
+        // Generate unique filename
+        const hash = crypto.createHash("md5").update(imageUrl.href).digest("hex").substring(0, 8);
+        const altMatch = img.match.match(/alt="([^"]*)"/i);
+        const imgTitle = altMatch ? altMatch[1] : "image";
+        const cleanTitle = sanitizeFilename(imgTitle).substring(0, 50);
+        const filename = `${cleanTitle}-${hash}${ext}`;
+        const localPath = path.join(imageDir, filename);
+
+        // Save image
+        await fs.writeFile(localPath, buffer);
+        downloadedCount++;
+
+        // Update image src in HTML
+        const relativePath = `${path.basename(imageDir)}/${filename}`;
+        const newImgTag = img.match.replace(img.src, relativePath);
+        modifiedHtml = modifiedHtml.replace(img.match, newImgTag);
+      } catch (error) {
+        console.error(`Failed to download image ${img.src}:`, error);
+      }
+    }
+
+    return downloadedCount > 0 ? { html: modifiedHtml, folder: imageDir } : null;
+  }
+  function createTurndownService(): TurndownService {
+    const turndownService = new TurndownService({
+      headingStyle: "atx",
+      hr: "---",
+      bulletListMarker: "-",
+      codeBlockStyle: "fenced",
+      fence: "```",
+      emDelimiter: "_",
+      strongDelimiter: "**",
+      linkStyle: "inlined",
+    });
+
+    // Remove unwanted elements
+    turndownService.remove([
+      "script",
+      "noscript",
+      "style",
+      "meta",
+      "link",
+      "iframe",
+      "object",
+      "embed",
+    ]);
+
+    // Handle code blocks
+    turndownService.addRule("fencedCodeBlock", {
+      filter: function (node) {
+        return (
+          node.nodeName === "PRE" &&
+          node.firstChild &&
+          node.firstChild.nodeName === "CODE"
+        );
+      },
+      replacement: function (content, node) {
+        const codeNode = node.firstChild as HTMLElement;
+        const className = codeNode.getAttribute("class") || "";
+        const language = className.match(/language-(\S+)/)?.[1] || "";
+        
+        return "\n\n```" + language + "\n" + codeNode.textContent + "\n```\n\n";
+      },
+    });
+
+    return turndownService;
+  }
+
+  return (
+    <Form
+      isLoading={isLoading}
+      actions={
+        <ActionPanel>
+          <Action.SubmitForm title="Convert to Markdown" onSubmit={handleSubmit} />
+          <Action.OpenInBrowser url="https://github.com/danielmarass/webpage-to-markdown" />
+        </ActionPanel>
+      }
+    >
+      <Form.TextField
+        title="URL"
+        placeholder="https://example.com/article"
+        info="The webpage URL to convert to markdown"
+        {...itemProps.url}
+      />
+      
+      <Form.Checkbox
+        label="Auto-generate filename from title"
+        info="Automatically create a filename based on the page title"
+        {...itemProps.autoGenerateFilename}
+      />
+      
+      {!values.autoGenerateFilename && (
+        <Form.TextField
+          title="Filename"
+          placeholder={suggestedFilename || "article.md"}
+          info="Name for the markdown file (extension will be added automatically)"
+          {...itemProps.filename}
+        />
+      )}
+      
+      <Form.TextField
+        title="Output Path"
+        placeholder="/Users/username/Documents"
+        info="Directory where the markdown file will be saved"
+        {...itemProps.outputPath}
+      />
+      
+      <Form.Separator />
+      
+      <Form.Description text="Conversion Options" />
+      
+      <Form.Checkbox
+        label="Remove non-content elements"
+        info="Extract only the main article content, removing ads, navigation, etc."
+        {...itemProps.removeNonContent}
+      />
+      
+      <Form.Checkbox
+        label="Download images locally"
+        info="Download all images and update links to local files"
+        {...itemProps.downloadImages}
+      />
+      
+      <Form.Checkbox
+        label="Open file after conversion"
+        info="Automatically open the markdown file in your default editor"
+        {...itemProps.openAfterConversion}
+      />
+    </Form>
+  );
+}

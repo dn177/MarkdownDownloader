@@ -1,0 +1,97 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "webpage-to-markdown",
+  "title": "Webpage to Markdown",
+  "description": "Download and convert webpages to clean markdown files",
+  "icon": "command-icon.png",
+  "author": "danielmarass",
+  "private": true,
+  "categories": [
+    "Productivity",
+    "Developer Tools"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "convert",
+      "title": "Convert Webpage to Markdown",
+      "subtitle": "Download and convert a webpage to markdown",
+      "description": "Downloads a webpage and converts it to clean markdown, with options to remove non-content elements and download images",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "defaultOutputPath",
+      "title": "Default Output Path",
+      "description": "Default directory for saving markdown files",
+      "type": "directory",
+      "required": false,
+      "default": "~/Downloads"
+    },
+    {
+      "name": "defaultImagePath",
+      "title": "Default Image Subfolder",
+      "description": "Subfolder name for downloaded images (relative to output path)",
+      "type": "textfield",
+      "required": false,
+      "default": "images"
+    },
+    {
+      "name": "removeScripts",
+      "title": "Remove Scripts",
+      "description": "Remove script tags from content",
+      "type": "checkbox",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "removeStyles",
+      "title": "Remove Styles",
+      "description": "Remove style tags from content",
+      "type": "checkbox",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "autoOpenFile",
+      "title": "Auto Open File",
+      "description": "Automatically open the markdown file after conversion",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "preferredOutputFolder",
+      "title": "Preferred Output Folders",
+      "description": "Comma-separated list of frequently used folders (e.g., ~/Documents/Articles, ~/Notes)",
+      "type": "textfield",
+      "required": false,
+      "placeholder": "~/Documents/Articles, ~/Notes"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.64.0",
+    "@raycast/utils": "^1.10.0",
+    "fs-extra": "^11.2.0",
+    "node-fetch": "^2.7.0",
+    "turndown": "^7.1.2"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.8",
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.10.0",
+    "@types/node-fetch": "^2.6.12",
+    "@types/react": "^19.0.0",
+    "@types/turndown": "^5.0.4",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0"
+  },
+  "scripts": {
+    "build": "ray build --skip-types -o ./dist",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "publish": "npx @raycast/api@latest publish"
+  }
+}

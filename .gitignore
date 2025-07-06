@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+#logs
+file_log/
+
+# Raycast
+.raycast/
+
+# System files
+.DS_Store
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
+
+#backups
+.bak
+
+.sh
+
+AI_TRACKING_GUIDE.md
