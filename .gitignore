@@ -23,7 +23,7 @@ file_log/
 .env.local
 
 #backups
-.bak
+*.bak
 
 .sh
 
